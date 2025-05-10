@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>소리의 3요소 분석기</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      background: #f9fbff;
+      padding: 20px;
+    }
+
+    canvas {
+      border: 2px solid #333;
+      margin-top: 20px;
+    }
+
+    #frequency-display, #note-display, #tuning-guide {
+      margin-top: 10px;
+      font-size: 1.2rem;
+      color: #003366;
+    }
+
+    #toggle-btn {
+      margin-top: 20px;
+      font-size: 1rem;
+      padding: 8px 16px;
+    }
+
+    #keyboard {
+      margin: 30px auto;
+      display: flex;
+      justify-content: center;
+      position: relative;
+      height: 120px;
+      width: fit-content;
+    }
+
+    .white-key, .black-key {
+      border: 1px solid #333;
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+    }
+
+    .white-key {
+      background: white;
+      width: 40px;
+      height: 120px;
+      z-index: 1;
+    }
+
+    .black-key {
+      background: black;
+      width: 25px;
+      height: 80px;
+      z-index: 2;
+      color: white;
+      position: absolute;
+      top: 0;
+    }
+
+    .key-label {
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      font-size: 12px;
+    }
+
+    #octave-controls {
+      margin-top: 10px;
+    }
+
+    #tuning-display {
+      margin-top: 10px;
+      font-size: 1.2rem;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎵 소리의 3요소 분석기</h1>
+  <p>마이크에 대고 말하거나 악기 소리를 들려주세요.</p>
+
+  <canvas id="waveform" width="600" height="200"></canvas>
+  <div id="frequency-display">진동수: 측정 중...</div>
+  <div id="note-display">음 이름: 분석 중...</div>
+  <div id="tuning-guide">조율 가이드: 분석 중...</div>
+  <button id="toggle-btn">⏸ 멈춤</button>
+
+  <h2>🎹 음 재생 건반 (한 옥타브)</h2>
+  <div id="octave-controls">
+    <button onclick="changeOctave(-1)">◀️ 낮게</button>
+    <span id="current-octave">옥타브: 4</span>
+    <button onclick="changeOctave(1)">▶️ 높게</button>
+  </div>
+  <div id="keyboard"></div>
+
+  <script>
+    const canvas = document.getElementById("waveform");
+    const ctx = canvas.getContext("2d");
+    const freqDisplay = document.getElementById("frequency-display");
+    const noteDisplay = document.getElementById("note-display");
+    const tuningGuide = document.getElementById("tuning-guide");
+    const toggleBtn = document.getElementById("toggle-btn");
+
+    let isPaused = false;
+    let audioCtx;
+
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+
+      analyser.fftSize = 2048;
+      const bufferLength = analyser.fftSize;
+      const dataArray = new Uint8Array(bufferLength);
+      const freqArray = new Uint8Array(analyser.frequencyBinCount);
+
+      source.connect(analyser);
+
+      toggleBtn.addEventListener("click", () => {
+        isPaused = !isPaused;
+        toggleBtn.innerText = isPaused ? "▶ 다시 시작" : "⏸ 멈춤";
+      });
+
+      function draw() {
+        requestAnimationFrame(draw);
+        if (isPaused) return;
+
+        analyser.getByteTimeDomainData(dataArray);
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "blue";
+        ctx.beginPath();
+
+        const sliceWidth = canvas.width / bufferLength;
+        let x = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          const v = dataArray[i] / 128.0;
+          const y = v * canvas.height / 2;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+          x += sliceWidth;
+        }
+        ctx.lineTo(canvas.width, canvas.height / 2);
+        ctx.stroke();
+
+        analyser.getByteFrequencyData(freqArray);
+        let maxVal = 0;
+        let maxIndex = 0;
+        for (let i = 0; i < freqArray.length; i++) {
+          if (freqArray[i] > maxVal) {
+            maxVal = freqArray[i];
+            maxIndex = i;
+          }
+        }
+
+        const freq = maxIndex * audioCtx.sampleRate / analyser.fftSize;
+freqDisplay.innerText = `진동수: ${freq.toFixed(1)} Hz`; // 소수점 첫째 자리까지
+
+if (freq > 80 && freq < 2000) {
+  const noteInfo = freqToNote(freq);
+  noteDisplay.innerText = `음 이름: ${noteInfo.name} (${noteInfo.cent >= 0 ? "+" : ""}${noteInfo.cent} cent)`;
+
+  // 조율 가이드 판단
+  if (noteInfo.cent > 5) tuningGuide.innerText = "조율 가이드: 음을 내리세요 🔽";
+  else if (noteInfo.cent < -5) tuningGuide.innerText = "조율 가이드: 음을 올리세요 🔼";
+  else tuningGuide.innerText = "조율 가이드: 정확해요! ✅";
+} else {
+  noteDisplay.innerText = "음 이름: 분석 중...";
+  tuningGuide.innerText = "조율 가이드: 분석 중...";
+        }
+      }
+
+      draw();
+    }).catch(err => {
+      alert('마이크 접근이 거부되었어요. 다시 시도해 주세요.');
+    });
+
+    function freqToNote(freq) {
+      const A4 = 440;
+      const noteNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+      const noteNum = 12 * (Math.log2(freq / A4)) + 69;
+      const rounded = Math.round(noteNum);
+      const noteName = noteNames[rounded % 12];
+      const octave = Math.floor(rounded / 12) - 1;
+      const cent = Math.floor((noteNum - rounded) * 100);
+      return {
+        name: noteName + octave,
+        cent: cent
+      };
+    }
+
+    function playFreq(freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      gain.gain.value = 0.1;
+
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + 1);
+    }
+
+    let currentOctave = 4;
+    const whiteOrder = ["C", "D", "E", "F", "G", "A", "B"];
+    const keyOffsets = { "C": 0, "C♯": 1, "D": 2, "D♯": 3, "E": 4, "F": 5, "F♯": 6, "G": 7, "G♯": 8, "A": 9, "A♯": 10, "B": 11 };
+
+    function drawKeyboard(octave) {
+      const container = document.getElementById("keyboard");
+      container.innerHTML = "";
+      document.getElementById("current-octave").innerText = `옥타브: ${octave}`;
+
+      const whiteNotes = ["C", "D", "E", "F", "G", "A", "B"];
+      const blackNotes = ["C♯", "D♯", "", "F♯", "G♯", "A♯", ""];
+
+      whiteNotes.forEach((note, i) => {
+        const midi = 12 * (octave + 1) + keyOffsets[note];
+        const freq = 440 * Math.pow(2, (midi - 69) / 12);
+        const key = document.createElement("div");
+        key.className = "white-key";
+        key.innerHTML = `<div class="key-label">${note}${octave}<br>${freq.toFixed(1)}Hz</div>`;
+        key.onclick = () => playFreq(freq);
+        container.appendChild(key);
+
+        const black = blackNotes[i];
+        if (black) {
+          const blackMidi = 12 * (octave + 1) + keyOffsets[black];
+          const blackFreq = 440 * Math.pow(2, (blackMidi - 69) / 12);
+          const blackKey = document.createElement("div");
+          blackKey.className = "black-key";
+          blackKey.style.left = `${i * 40 + 25}px`;
+          blackKey.innerHTML = `<div class="key-label">${black}${octave}</div>`;
+          blackKey.onclick = () => playFreq(blackFreq);
+          container.appendChild(blackKey);
+        }
+      });
+    }
+
+    function changeOctave(change) {
+      currentOctave = Math.min(7, Math.max(1, currentOctave + change));
+      drawKeyboard(currentOctave);
+    }
+
+    drawKeyboard(currentOctave);
+  </script>
+</body>
+</html>
