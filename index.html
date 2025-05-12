@@ -108,13 +108,57 @@
 
     let isPaused = false;
     let audioCtx;
+    let frequencyHistory = [];
+    const HISTORY_SIZE = 5;
+    const NOISE_THRESHOLD = 50; // 노이즈 임계값 조정
+
+    // 주파수 평균화 함수
+    function smoothFrequency(newFreq) {
+      frequencyHistory.push(newFreq);
+      if (frequencyHistory.length > HISTORY_SIZE) {
+        frequencyHistory.shift();
+      }
+      return frequencyHistory.reduce((a, b) => a + b) / frequencyHistory.length;
+    }
+
+    // 개선된 주파수 검출 알고리즘
+    function findFundamentalFrequency(freqArray, sampleRate, fftSize) {
+      const peaks = [];
+      
+      // 피크 검출
+      for (let i = 1; i < freqArray.length - 1; i++) {
+        if (freqArray[i] > NOISE_THRESHOLD && 
+            freqArray[i] > freqArray[i-1] && 
+            freqArray[i] > freqArray[i+1]) {
+          peaks.push({
+            index: i,
+            magnitude: freqArray[i]
+          });
+        }
+      }
+
+      // 피크가 없으면 0 반환
+      if (peaks.length === 0) return 0;
+
+      // 가장 강한 피크 선택
+      peaks.sort((a, b) => b.magnitude - a.magnitude);
+      
+      // 주파수 계산 시 보간법 적용
+      const peakIndex = peaks[0].index;
+      const alpha = freqArray[peakIndex + 1] - freqArray[peakIndex - 1];
+      const beta = 2 * (2 * freqArray[peakIndex] - freqArray[peakIndex - 1] - freqArray[peakIndex + 1]);
+      const interpolatedIndex = peakIndex + alpha / beta;
+
+      return interpolatedIndex * sampleRate / fftSize;
+    }
 
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
 
-      analyser.fftSize = 2048;
+      // FFT 크기 증가로 주파수 해상도 향상
+      analyser.fftSize = 4096;
       const bufferLength = analyser.fftSize;
       const dataArray = new Uint8Array(bufferLength);
       const freqArray = new Uint8Array(analyser.frequencyBinCount);
@@ -130,6 +174,7 @@
         requestAnimationFrame(draw);
         if (isPaused) return;
 
+        // 파형 그리기
         analyser.getByteTimeDomainData(dataArray);
         ctx.fillStyle = "white";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -149,30 +194,35 @@
         ctx.lineTo(canvas.width, canvas.height / 2);
         ctx.stroke();
 
+        // 주파수 분석
         analyser.getByteFrequencyData(freqArray);
-        let maxVal = 0;
-        let maxIndex = 0;
-        for (let i = 0; i < freqArray.length; i++) {
-          if (freqArray[i] > maxVal) {
-            maxVal = freqArray[i];
-            maxIndex = i;
+        const freq = findFundamentalFrequency(freqArray, audioCtx.sampleRate, analyser.fftSize);
+        const smoothedFreq = smoothFrequency(freq);
+
+        if (smoothedFreq > 0) {
+          freqDisplay.innerText = `진동수: ${smoothedFreq.toFixed(1)} Hz`;
+
+          if (smoothedFreq > 80 && smoothedFreq < 2000) {
+            const noteInfo = freqToNote(smoothedFreq);
+            noteDisplay.innerText = `음 이름: ${noteInfo.name} (${noteInfo.cent >= 0 ? "+" : ""}${noteInfo.cent} cent)`;
+
+            // 조율 가이드 판단 - 더 엄격한 기준 적용
+            if (Math.abs(noteInfo.cent) <= 3) {
+              tuningGuide.innerText = "조율 가이드: 정확해요! ✅";
+              tuningGuide.style.color = "#008800";
+            } else if (noteInfo.cent > 3) {
+              tuningGuide.innerText = "조율 가이드: 음을 내리세요 🔽";
+              tuningGuide.style.color = "#880000";
+            } else {
+              tuningGuide.innerText = "조율 가이드: 음을 올리세요 🔼";
+              tuningGuide.style.color = "#880000";
+            }
           }
-        }
-
-        const freq = maxIndex * audioCtx.sampleRate / analyser.fftSize;
-freqDisplay.innerText = `진동수: ${freq.toFixed(1)} Hz`; // 소수점 첫째 자리까지
-
-if (freq > 80 && freq < 2000) {
-  const noteInfo = freqToNote(freq);
-  noteDisplay.innerText = `음 이름: ${noteInfo.name} (${noteInfo.cent >= 0 ? "+" : ""}${noteInfo.cent} cent)`;
-
-  // 조율 가이드 판단
-  if (noteInfo.cent > 5) tuningGuide.innerText = "조율 가이드: 음을 내리세요 🔽";
-  else if (noteInfo.cent < -5) tuningGuide.innerText = "조율 가이드: 음을 올리세요 🔼";
-  else tuningGuide.innerText = "조율 가이드: 정확해요! ✅";
-} else {
-  noteDisplay.innerText = "음 이름: 분석 중...";
-  tuningGuide.innerText = "조율 가이드: 분석 중...";
+        } else {
+          freqDisplay.innerText = "진동수: 측정 중...";
+          noteDisplay.innerText = "음 이름: 분석 중...";
+          tuningGuide.innerText = "조율 가이드: 분석 중...";
+          tuningGuide.style.color = "#003366";
         }
       }
 
