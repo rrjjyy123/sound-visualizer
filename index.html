@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <title>소리의 3요소 분석기</title>
+  <title>붐웨커 특화 소리의 3요소 분석기 (HPS+Sub‑Harmonic 보정)</title>
   <style>
     body {
       font-family: sans-serif;
@@ -81,13 +81,14 @@
   </style>
 </head>
 <body>
-  <h1>🎵 소리의 3요소 분석기</h1>
-  <p>마이크에 대고 말하거나 악기 소리를 들려주세요.</p>
+  <h1>🎵  소리의 3요소 분석기 </h1>
+  <p>마이크에 대고 소리를 들려주세요.<br>
+     </p>
 
   <canvas id="waveform" width="600" height="200"></canvas>
-  <div id="frequency-display">진동수: 측정 중...</div>
-  <div id="note-display">음 이름: 분석 중...</div>
-  <div id="tuning-guide">조율 가이드: 분석 중...</div>
+  <div id="frequency-display">진동수: 측정 중.</div>
+  <div id="note-display">음 이름: 분석 중.</div>
+  <div id="tuning-guide">조율 가이드: 분석 중.</div>
   <button id="toggle-btn">⏸ 멈춤</button>
 
   <h2>🎹 음 재생 건반 (한 옥타브)</h2>
@@ -108,144 +109,127 @@
 
     let isPaused = false;
     let audioCtx;
-    let frequencyHistory = [];
-    const HISTORY_SIZE = 5;
-    const NOISE_THRESHOLD = 50; // 노이즈 임계값 조정
+    let analyser;
+    let dataArray, freqArray, bufferLength;
 
-    // 주파수 평균화 함수
-    function smoothFrequency(newFreq) {
-      frequencyHistory.push(newFreq);
-      if (frequencyHistory.length > HISTORY_SIZE) {
-        frequencyHistory.shift();
-      }
-      return frequencyHistory.reduce((a, b) => a + b) / frequencyHistory.length;
-    }
+    // 붐웨커 특화: 결과를 고정해서 보여주는 시간(ms)
+    const HOLD_TIME = 1500;
+    // 소리 감지 임계값(실험적으로 조정 필요)
+    const ENERGY_THRESHOLD = 10; // 0~100 정도 값, 마이크/환경에 따라 조정
 
-    // 개선된 주파수 검출 알고리즘
-    function findFundamentalFrequency(freqArray, sampleRate, fftSize) {
-      const peaks = [];
-      
-      // 피크 검출
-      for (let i = 1; i < freqArray.length - 1; i++) {
-        if (freqArray[i] > NOISE_THRESHOLD && 
-            freqArray[i] > freqArray[i-1] && 
-            freqArray[i] > freqArray[i+1]) {
-          peaks.push({
-            index: i,
-            magnitude: freqArray[i]
-          });
-        }
-      }
+    // 마지막으로 감지된 정보
+    let lastDetectedTime = 0;
+    let lastDetectedFreq = 0;
+    let lastDetectedNote = null;
 
-      // 피크가 없으면 0 반환
-      if (peaks.length === 0) return 0;
+    // 옥타브 및 건반 변수
+    let currentOctave = 4;
+    const keyOffsets = { "C": 0, "C♯": 1, "D": 2, "D♯": 3, "E": 4, "F": 5, "F♯": 6, "G": 7, "G♯": 8, "A": 9, "A♯": 10, "B": 11 };
 
-      // 가장 강한 피크 선택
-      peaks.sort((a, b) => b.magnitude - a.magnitude);
-      
-      // 주파수 계산 시 보간법 적용
-      const peakIndex = peaks[0].index;
-      const alpha = freqArray[peakIndex + 1] - freqArray[peakIndex - 1];
-      const beta = 2 * (2 * freqArray[peakIndex] - freqArray[peakIndex - 1] - freqArray[peakIndex + 1]);
-      const interpolatedIndex = peakIndex + alpha / beta;
+    toggleBtn.addEventListener("click", () => {
+      isPaused = !isPaused;
+      toggleBtn.innerText = isPaused ? "▶ 다시 시작" : "⏸ 멈춤";
+    });
 
-      return interpolatedIndex * sampleRate / fftSize;
-    }
-
+    // 마이크 접근
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaStreamSource(stream);
-      const analyser = audioCtx.createAnalyser();
+      analyser = audioCtx.createAnalyser();
 
-      // FFT 크기 증가로 주파수 해상도 향상
-      analyser.fftSize = 4096;
-      const bufferLength = analyser.fftSize;
-      const dataArray = new Uint8Array(bufferLength);
-      const freqArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.fftSize = 4096; // 주파수 해상도 증가
+      bufferLength = analyser.fftSize;
+      dataArray = new Uint8Array(bufferLength);
+      freqArray = new Uint8Array(analyser.frequencyBinCount);
 
       source.connect(analyser);
-
-      toggleBtn.addEventListener("click", () => {
-        isPaused = !isPaused;
-        toggleBtn.innerText = isPaused ? "▶ 다시 시작" : "⏸ 멈춤";
-      });
-
-      function draw() {
-        requestAnimationFrame(draw);
-        if (isPaused) return;
-
-        // 파형 그리기
-        analyser.getByteTimeDomainData(dataArray);
-        ctx.fillStyle = "white";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "blue";
-        ctx.beginPath();
-
-        const sliceWidth = canvas.width / bufferLength;
-        let x = 0;
-        for (let i = 0; i < bufferLength; i++) {
-          const v = dataArray[i] / 128.0;
-          const y = v * canvas.height / 2;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-          x += sliceWidth;
-        }
-        ctx.lineTo(canvas.width, canvas.height / 2);
-        ctx.stroke();
-
-        // 주파수 분석
-        analyser.getByteFrequencyData(freqArray);
-        const freq = findFundamentalFrequency(freqArray, audioCtx.sampleRate, analyser.fftSize);
-        const smoothedFreq = smoothFrequency(freq);
-
-        if (smoothedFreq > 0) {
-          freqDisplay.innerText = `진동수: ${smoothedFreq.toFixed(1)} Hz`;
-
-          if (smoothedFreq > 80 && smoothedFreq < 2000) {
-            const noteInfo = freqToNote(smoothedFreq);
-            noteDisplay.innerText = `음 이름: ${noteInfo.name} (${noteInfo.cent >= 0 ? "+" : ""}${noteInfo.cent} cent)`;
-
-            // 조율 가이드 판단 - 더 엄격한 기준 적용
-            if (Math.abs(noteInfo.cent) <= 3) {
-              tuningGuide.innerText = "조율 가이드: 정확해요! ✅";
-              tuningGuide.style.color = "#008800";
-            } else if (noteInfo.cent > 3) {
-              tuningGuide.innerText = "조율 가이드: 음을 내리세요 🔽";
-              tuningGuide.style.color = "#880000";
-            } else {
-              tuningGuide.innerText = "조율 가이드: 음을 올리세요 🔼";
-              tuningGuide.style.color = "#880000";
-            }
-          }
-        } else {
-          freqDisplay.innerText = "진동수: 측정 중...";
-          noteDisplay.innerText = "음 이름: 분석 중...";
-          tuningGuide.innerText = "조율 가이드: 분석 중...";
-          tuningGuide.style.color = "#003366";
-        }
-      }
 
       draw();
     }).catch(err => {
       alert('마이크 접근이 거부되었어요. 다시 시도해 주세요.');
     });
 
+    // ================= 도우미 함수 =================
+    // RMS(음의 에너지) 계산
+    function getRMS(data) {
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / data.length) * 100;
+    }
+
+    // HPS (Harmonic Product Spectrum) 기반의 주파수 추정 + Sub‑Harmonic 보정
+    function hpsFrequency(freqArray, sampleRate, fftSize) {
+      const len = freqArray.length;
+      const spec = new Float32Array(len);
+      for (let i = 0; i < len; i++) spec[i] = freqArray[i];
+
+      // 1) Normalised HPS (geometric mean) ─ reduces bias toward sub‑harmonics
+      const maxHarm = 4;
+      const hpsSpec = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        let prod = spec[i];
+        let validHarm = 1;
+        for (let h = 2; h <= maxHarm; h++) {
+          const idx = Math.floor(i * h);
+          if (idx < len) {
+            prod *= spec[idx];
+            validHarm++;
+          } else {
+            break;
+          }
+        }
+        // Geometric mean
+        hpsSpec[i] = Math.pow(prod, 1 / validHarm);
+      }
+
+      // 2) 피크 찾기 (80 Hz 이상만)
+      let maxVal = 0, maxIdx = 0;
+      const binSize = sampleRate / fftSize;
+      const minBin = Math.floor(80 / binSize);
+
+      for (let i = minBin; i < len; i++) {
+        if (hpsSpec[i] > maxVal) {
+          maxVal = hpsSpec[i];
+          maxIdx = i;
+        }
+      }
+
+      // 3) Parabolic interpolation for sub‑bin accuracy
+      let interpolatedIdx = maxIdx;
+      if (maxIdx > 0 && maxIdx < len - 1) {
+        const alpha = hpsSpec[maxIdx + 1] - hpsSpec[maxIdx - 1];
+        const beta = 2 * (2 * hpsSpec[maxIdx] - hpsSpec[maxIdx - 1] - hpsSpec[maxIdx + 1]);
+        if (beta !== 0) interpolatedIdx = maxIdx + alpha / beta;
+      }
+
+      // 4) Sub‑harmonic 보정: 2배 bin의 원시 스펙트럼이 더 강하면 fundamental을 그쪽으로 올려줌
+      const idx1 = Math.floor(interpolatedIdx);
+      const idx2 = idx1 * 2;
+      if (idx2 < len && spec[idx2] > spec[idx1] * 1.3) {
+        interpolatedIdx = interpolatedIdx * 2;
+      }
+
+      return interpolatedIdx * sampleRate / fftSize;
+    }
+
+    // 주파수 -> 음 이름, 센트 변환
     function freqToNote(freq) {
       const A4 = 440;
       const noteNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
-      const noteNum = 12 * (Math.log2(freq / A4)) + 69;
+      const noteNum = 12 * Math.log2(freq / A4) + 69;
       const rounded = Math.round(noteNum);
       const noteName = noteNames[rounded % 12];
       const octave = Math.floor(rounded / 12) - 1;
       const cent = Math.floor((noteNum - rounded) * 100);
-      return {
-        name: noteName + octave,
-        cent: cent
-      };
+      return { name: noteName + octave, cent };
     }
 
+    // 건반 음 재생
     function playFreq(freq) {
+      if (!audioCtx) return;
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       gain.gain.value = 0.1;
@@ -259,10 +243,7 @@
       osc.stop(audioCtx.currentTime + 1);
     }
 
-    let currentOctave = 4;
-    const whiteOrder = ["C", "D", "E", "F", "G", "A", "B"];
-    const keyOffsets = { "C": 0, "C♯": 1, "D": 2, "D♯": 3, "E": 4, "F": 5, "F♯": 6, "G": 7, "G♯": 8, "A": 9, "A♯": 10, "B": 11 };
-
+    // 건반 그리기
     function drawKeyboard(octave) {
       const container = document.getElementById("keyboard");
       container.innerHTML = "";
@@ -300,6 +281,72 @@
     }
 
     drawKeyboard(currentOctave);
+
+    // ================= 메인 분석/시각화 루프 =================
+    function draw() {
+      requestAnimationFrame(draw);
+      if (isPaused || !analyser) return;
+
+      // 파형 그리기
+      analyser.getByteTimeDomainData(dataArray);
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "blue";
+      ctx.beginPath();
+
+      const sliceWidth = canvas.width / bufferLength;
+      let x = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        const v = dataArray[i] / 128.0;
+        const y = v * canvas.height / 2;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+        x += sliceWidth;
+      }
+      ctx.lineTo(canvas.width, canvas.height / 2);
+      ctx.stroke();
+
+      // 볼륨(에너지) 계산
+      const energy = getRMS(dataArray);
+      let showFreq = false;
+
+      if (energy > ENERGY_THRESHOLD) {
+        analyser.getByteFrequencyData(freqArray);
+        const freq = hpsFrequency(freqArray, audioCtx.sampleRate, analyser.fftSize);
+        if (freq > 0 && freq < 2000) {
+          lastDetectedTime = Date.now();
+          lastDetectedFreq = freq;
+          lastDetectedNote = freqToNote(freq);
+          showFreq = true;
+        }
+      } else if (Date.now() - lastDetectedTime < HOLD_TIME) {
+        // 소리 없지만, 최근 감지값 유지
+        showFreq = true;
+      }
+
+      if (showFreq && lastDetectedFreq > 0 && lastDetectedNote) {
+        freqDisplay.innerText = `진동수: ${lastDetectedFreq.toFixed(1)} Hz`;
+        noteDisplay.innerText = `음 이름: ${lastDetectedNote.name} (${lastDetectedNote.cent >= 0 ? "+" : ""}${lastDetectedNote.cent} cent)`;
+
+        // 조율 가이드
+        if (Math.abs(lastDetectedNote.cent) <= 3) {
+          tuningGuide.innerText = "조율 가이드: 정확해요! ✅";
+          tuningGuide.style.color = "#008800";
+        } else if (lastDetectedNote.cent > 3) {
+          tuningGuide.innerText = "조율 가이드: 음을 내리세요 🔽";
+          tuningGuide.style.color = "#880000";
+        } else {
+          tuningGuide.innerText = "조율 가이드: 음을 올리세요 🔼";
+          tuningGuide.style.color = "#880000";
+        }
+      } else {
+        freqDisplay.innerText = "진동수: 측정 중...";
+        noteDisplay.innerText = "음 이름: 분석 중...";
+        tuningGuide.innerText = "조율 가이드: 분석 중...";
+        tuningGuide.style.color = "#003366";
+      }
+    }
   </script>
 </body>
 </html>
